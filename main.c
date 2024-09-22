@@ -5,11 +5,40 @@
 #include "xalloc.h"
 
 struct node {
+    /// flags of this node
+    uint32_t flags;
     /// 256 bit mask
     uint16_t grp[16];
     /// left and right node of this binary tree
-    struct node *left, *right;
+    uint32_t left, right;
 };
+
+struct engine {
+    /// all nodes within the engine
+    struct node *nodes;
+    /// the number of nodes
+    uint32_t num_nodes;
+    /// the number of allocated nodes
+    uint32_t a_nodes;
+};
+
+struct node *add_node(struct engine *eng)
+{
+    struct node *n;
+
+    if (eng->num_nodes + 1 >= eng->a_nodes) {
+        eng->a_nodes *= 2;
+        eng->a_nodes++;
+        eng->nodes = xreallocarray(eng->nodes, sizeof(*eng->nodes),
+                                   eng->a_nodes);
+    }
+    n = &eng->nodes[eng->num_nodes++];
+    n->flags = 0;
+    n->left = UINT32_MAX;
+    n->right = UINT32_MAX;
+    memset(n->grp, 0, sizeof(n->grp));
+    return n;
+}
 
 void gr_toggle(uint16_t *grp, unsigned char ch)
 {
@@ -21,11 +50,9 @@ bool gr_is_toggled(uint16_t *grp, unsigned char ch)
     return grp[ch >> 4] & (1 << (ch & 0xf));
 }
 
-struct node *parse_regex(const char *regex)
+int parse_regex(const char *regex, struct engine *eng)
 {
     struct node     *new_head;
-    struct node     **nodes = NULL;
-    size_t          num_nodes = 0;
     size_t          *jp = NULL;
     size_t          num_jp = 0;
     struct node     *root;
@@ -35,7 +62,7 @@ struct node *parse_regex(const char *regex)
         switch (regex[0]) {
         case '(':
             jp = xrealloc(jp, sizeof(*jp) * (num_jp + 1));
-            jp[num_jp] = num_nodes;
+            jp[num_jp] = eng->num_nodes;
             num_jp++;
             regex++;
             break;
@@ -50,9 +77,8 @@ struct node *parse_regex(const char *regex)
                 regex++;
                 switch (regex[0]) {
                 case '+':
-                    if (nodes[num_nodes - 1]->right == NULL) {
-                        nodes[num_nodes - 1]->right =
-                            nodes[jp[num_jp - 1]];
+                    if (eng->nodes[eng->num_nodes - 1].right == SIZE_MAX) {
+                        eng->nodes[eng->num_nodes - 1].right = jp[num_jp - 1];
                     } else {
                         /* TODO: create intermezzo node */
                         fprintf(stderr, "hit edge case #1\n");
@@ -67,26 +93,21 @@ struct node *parse_regex(const char *regex)
                     abort();
                     break;
                 }
-                num_nodes = jp[--num_jp];
+                /* TODO: */
                 break;
             }
             /* fall through */
         default:
-            nodes = xrealloc(nodes, sizeof(*nodes) * (num_nodes + 1));
-            new_head = xmalloc(sizeof(*new_head));
-            nodes[num_nodes++] = new_head;
-            new_head->left = NULL;
-            new_head->right = NULL;
-            memset(new_head->grp, 0, sizeof(new_head->grp));
+            new_head = add_node(eng);
             gr_toggle(new_head->grp, regex[0]);
-            if (num_nodes > 1) {
-                nodes[num_nodes - 2]->left = new_head;
+            if (eng->num_nodes > 1) {
+                eng->nodes[eng->num_nodes - 2].left = new_head - eng->nodes;
             }
             regex++;
             switch (regex[0]) {
             case '+':
                 /* repeat to itself */
-                nodes[num_nodes - 1]->right = nodes[num_nodes - 1];
+                eng->nodes[eng->num_nodes - 1].right = eng->num_nodes - 1;
                 regex++;
                 break;
 
@@ -99,9 +120,7 @@ struct node *parse_regex(const char *regex)
         }
     }
     free(jp);
-    root = nodes[0];
-    free(nodes);
-    return root;
+    return 0;
 }
 
 void print_group(uint16_t *grp)
@@ -121,45 +140,37 @@ void print_group(uint16_t *grp)
     }
 }
 
-void print_node(struct node *node)
+void print_node(struct engine *eng, uint32_t index)
 {
-    if (node == NULL) {
+    struct node *n;
+
+    if (index == UINT32_MAX) {
         printf("(empty node)\n");
         return;
     }
-    print_group(node->grp);
+    n = &eng->nodes[index];
+    print_group(n->grp);
     printf("\n");
     printf("left: ");
-    print_node(node->left);
+    print_node(eng, n->left);
     printf("right: ");
-    print_node(node->right);
+    print_node(eng, n->right);
 }
 
-void free_node(struct node *node)
+int match_string(struct engine *eng, uint32_t index, const char *s)
 {
-    free(node->left);
-    free(node->right);
-    free(node);
-}
+    struct node     *n;
+    unsigned char   c;
+    int             l, r;
 
-int match_string(struct node *n, const char *s)
-{
-    unsigned char       c;
-    int                 l, r;
-
-    if (s[0] == '\0') {
+    if (index == UINT32_MAX || s[0] == '\0') {
         return 0;
     }
+    n = &eng->nodes[index];
     c = s[0];
     if (gr_is_toggled(n->grp, c)) {
-        l = 0;
-        r = 0;
-        if (n->left != NULL) {
-            l = match_string(n->left, &s[1]);
-        }
-        if (n->right != NULL) {
-            r = match_string(n->right, &s[1]);
-        }
+        l = match_string(eng, n->left, &s[1]);
+        r = match_string(eng, n->right, &s[1]);
         if (l < r) {
             return r + 1;
         }
@@ -171,11 +182,23 @@ int match_string(struct node *n, const char *s)
 
 int main(void)
 {
-    const char *regex = "a+b";
+    const char *regex = "a+b+c";
+    struct engine eng;
+    struct node *n;
     
-    struct node *n = parse_regex(regex);
+    if (parse_regex(regex, &eng) != 0) {
+        printf("regex '%s' is invalid\n", regex);
+        return 1;
+    }
     //printf("head: ");
-   // print_node(n);
-    printf("match: %d\n", match_string(n, "aaabc"));
+    //print_node(&eng, 0);
+    printf("got %u nodes\n", eng.num_nodes);
+    for (uint32_t i = 0; i < eng.num_nodes; i++) {
+        n = &eng.nodes[i];
+        print_group(n->grp);
+        printf("\n");
+    }
+    printf("match: %d\n", match_string(&eng, 0, "aaabbbccc"));
+    free(eng.nodes);
     return 0;
 }
