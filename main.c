@@ -4,12 +4,15 @@
 #include <stdint.h>
 #include "xalloc.h"
 
+/// if the node can be passed through without matching
+#define NODE_OPTIONAL 0x1
+
 struct node {
     /// flags of this node
     uint32_t flags;
     /// 256 bit mask
     uint16_t grp[16];
-    /// left and right node of this binary tree
+    /// left and right node of this binary node
     uint32_t left, right;
 };
 
@@ -112,9 +115,11 @@ int parse_regex(const char *regex, struct engine *eng)
                 break;
 
             case '*':
+                eng->nodes[eng->num_nodes - 1].right = eng->num_nodes - 1;
+                /* fall through */
             case '?':
-                fprintf(stderr, "*? not supported yet\n");
-                abort();
+                eng->nodes[eng->num_nodes - 1].flags |= NODE_OPTIONAL;
+                regex++;
                 break;
             }
         }
@@ -171,10 +176,16 @@ int match_string(struct engine *eng, uint32_t index, const char *s)
     if (gr_is_toggled(n->grp, c)) {
         l = match_string(eng, n->left, &s[1]);
         r = match_string(eng, n->right, &s[1]);
-        if (l < r) {
-            return r + 1;
+        return (l < r ? r : l) + 1;
+    }
+    if ((n->flags & NODE_OPTIONAL)) {
+        l = match_string(eng, n->left, s);
+        if (n->right != index) {
+            r = match_string(eng, n->right, s);
+        } else {
+            r = 0;
         }
-        return l + 1;
+        return l < r ? r : l;
     }
     printf("failed here: %s\n", s);
     return -1;
@@ -182,7 +193,7 @@ int match_string(struct engine *eng, uint32_t index, const char *s)
 
 int main(void)
 {
-    const char *regex = "a+b+c";
+    const char *regex = "z?a+d*b+d*cd*";
     struct engine eng;
     struct node *n;
     
@@ -198,7 +209,7 @@ int main(void)
         print_group(n->grp);
         printf("\n");
     }
-    printf("match: %d\n", match_string(&eng, 0, "aaabbbccc"));
+    printf("match: %d\n", match_string(&eng, 0, "aaadbbbddccc"));
     free(eng.nodes);
     return 0;
 }
